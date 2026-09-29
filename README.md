@@ -31,7 +31,7 @@ its geometry to the next:
   sound share a zero point. Pause, restart and resize are exact because nothing accumulates.
 - **One cue table.** Scene cuts (`CUE`) are defined in beats, and both the visuals and the score
   read from it, so a cut can't drift off its beat.
-- **Re-schedulable score.** `scheduleFrom(t0)` books every event still sounding at `t0`, so
-  resume/restart just rebuilds the audio session.
+- **Re-schedulable score.** `startAt(t0)` opens a fresh audio session and `score()` books every
+  event still sounding at `t0`, so resume and restart just rebuild the session.
 - **Stage.** Locked 16:9 at 1920×1080 logical units, letterboxed on black, rendered at the
   device pixel ratio (capped at 2), with a one-step resolution fallback if frames run long.

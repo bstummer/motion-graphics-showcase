@@ -1470,8 +1470,8 @@ function drawEnd(t, hold) {
 
 /* ==========================================================================
    SOUND — synthesized with Web Audio, no samples.
-   The score is a pure function of the timeline, like the picture: scheduleFrom(t0)
-   books every event that is still sounding at t0 against the audio clock. Pause,
+   The score is a pure function of the timeline, like the picture: startAt(t0) opens a
+   fresh session and score() books every event still sounding at t0 against the audio clock. Pause,
    resume and restart just tear the session down and book it again.
    Harmony: Dm – B♭ – Gm – F – A (riser) – D major on the hit.
    ========================================================================== */
