@@ -8,7 +8,8 @@
 <meta name="theme-color" content="#000000">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=block" rel="stylesheet">
+<link id="fontcss" rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap"></noscript>
 <style>
   :root { --ink:#0F0E0C; --paper:#EFE9DE; --verm:#FF4A1C; --u:1px; }
   * { box-sizing:border-box; }
@@ -19,8 +20,8 @@
   #c, #gl, #ov, #hud { position:absolute; inset:0; width:100%; height:100%; display:block; }
   #gl, #ov, #hud { pointer-events:none; }
   #gl { visibility:hidden; }
-  body.post #gl { visibility:visible; }
-  body.post #c { visibility:hidden; }
+  body.post #gl { visibility:visible; }       /* opaque, over the raw frame, which stays as its underlay */
+  #gl.arrive { opacity:0; animation:fadein .6s cubic-bezier(.4,0,.2,1) forwards; }
   body.post #grain, body.post #vig { display:none; }
   #ov { display:none; }
   body.overlay #ov { display:block; }
@@ -206,6 +207,8 @@ const hudCtx = hudcv.getContext('2d');
 let SX = 1, SY = 1, QUALITY = 1, dirty = true;
 // Look switches. Blur = temporal supersampling; post = the WebGL finishing pass.
 const FX = { blur: true, post: true, overlay: false, loop: false, maxSamples: 16 };
+sub.width = sub.height = 1;                        // allocated on demand (see ensureSize)
+function ensureSize(c) { if (c.width !== cv.width || c.height !== cv.height) { c.width = cv.width; c.height = cv.height; } }
 
 function resize() {
   const vw = window.innerWidth, vh = window.innerHeight;
@@ -217,7 +220,9 @@ function resize() {
   st.setProperty('--u', (cw / W) + 'px');
   const dpr = Math.min(window.devicePixelRatio || 1, 2) * QUALITY;
   const pw = Math.max(1, Math.round(cw * dpr)), ph = Math.max(1, Math.round(ch * dpr));
-  for (const c of [cv, sub, glcv, ovcv, hudcv]) if (c.width !== pw || c.height !== ph) { c.width = pw; c.height = ph; }
+  for (const c of [cv, glcv, hudcv]) if (c.width !== pw || c.height !== ph) { c.width = pw; c.height = ph; }
+  if (sub.width > 1) ensureSize(sub);                 // the blur buffer and the overlay follow once they exist
+  if (FX.overlay) ensureSize(ovcv);
   SX = pw / W; SY = ph / H;
   if (POST.ok) POST.resize(pw, ph);
   dirty = true;
@@ -1118,27 +1123,46 @@ function drawField(t) {
    ========================================================================== */
 // Glyph atlas: printable ASCII, two inks, three focus levels (sharp, soft, far) for depth of field.
 const GA = { cell: 64, fs: 44, cols: 16, rows: 6, img: null, blur: [0, 2.4, 6] };
-function initAtlas() {
-  const { cell, cols, rows } = GA;
+function initAtlas() { for (const _ of atlasSteps()); }
+// A generator: boot() yields a frame after each step, so even CPU-only canvases never block for long.
+function* atlasSteps() {
+  // Built in six passes, not hundreds: set the sharp glyphs once, then derive each defocus level
+  // with a single filtered copy of the whole bank, and each vermilion bank with a single tint.
+  // (Per-glyph canvas filters cost one full-canvas blur per draw: that was the load-time freeze.)
+  const { cell, cols, rows } = GA, bankH = rows * cell, bw = cell * cols;
   const c = document.createElement('canvas');
-  c.width = cell * cols; c.height = cell * rows * 6;
+  c.width = bw; c.height = bankH * 6;
   const g = c.getContext('2d');
   g.font = `500 ${GA.fs}px ${MONO}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = COL.paper;
+  for (let i = 1; i < 95; i++) g.fillText(String.fromCharCode(32 + i), (i % cols) * cell + cell / 2, ((i / cols) | 0) * cell + cell / 2 + 2);
+  yield;
   const hasFilter = typeof g.filter === 'string';
-  for (let lv = 0; lv < 3; lv++) for (let ink = 0; ink < 2; ink++) {
-    const oy = (lv * 2 + ink) * rows * cell, bl = GA.blur[lv];
-    g.fillStyle = ink ? COL.verm : COL.paper;
-    for (let i = 1; i < 95; i++) {
-      const x = (i % cols) * cell + cell / 2, y = oy + ((i / cols) | 0) * cell + cell / 2 + 2, ch = String.fromCharCode(32 + i);
-      if (!bl) { g.fillText(ch, x, y); continue; }
-      if (hasFilter) {                                   // a defocused glyph keeps its energy: draw it twice
-        g.filter = `blur(${bl}px)`; g.fillText(ch, x, y); g.globalAlpha = 0.6; g.fillText(ch, x, y); g.globalAlpha = 1; g.filter = 'none';
-      } else {                                           // no canvas filter: a small disc of offsets
-        g.globalAlpha = 0.2;
-        for (let q = 0; q < 8; q++) g.fillText(ch, x + Math.cos(q * TAU / 8) * bl * 0.7, y + Math.sin(q * TAU / 8) * bl * 0.7);
-        g.globalAlpha = 1;
-      }
+  const bank = (lv, ink) => (lv * 2 + ink) * bankH;
+  for (let lv = 1; lv < 3; lv++) {
+    const bl = GA.blur[lv], oy = bank(lv, 0);
+    g.save();
+    g.beginPath(); g.rect(0, oy, bw, bankH); g.clip();              // blur must not bleed into the next bank
+    if (hasFilter) {                                                 // a defocused glyph keeps its energy: twice
+      g.filter = `blur(${bl}px)`;
+      g.drawImage(c, 0, 0, bw, bankH, 0, oy, bw, bankH);
+      g.globalAlpha = 0.6; g.drawImage(c, 0, 0, bw, bankH, 0, oy, bw, bankH);
+      g.filter = 'none';
+    } else {                                                         // no canvas filter: a small disc of offsets
+      g.globalAlpha = 0.2;
+      for (let q = 0; q < 8; q++) g.drawImage(c, 0, 0, bw, bankH, Math.cos(q * TAU / 8) * bl * 0.7, oy + Math.sin(q * TAU / 8) * bl * 0.7, bw, bankH);
     }
+    g.restore();
+    g.getImageData(0, oy, 1, 1);                                     // flush the blur now, inside this step
+    yield;
+  }
+  for (let lv = 0; lv < 3; lv++) {                                   // vermilion ink: copy the paper bank, recolour it
+    const src = bank(lv, 0), dst = bank(lv, 1);
+    g.drawImage(c, 0, src, bw, bankH, 0, dst, bw, bankH);
+    g.save();
+    g.beginPath(); g.rect(0, dst, bw, bankH); g.clip();
+    g.globalCompositeOperation = 'source-atop'; g.fillStyle = COL.verm; g.fillRect(0, dst, bw, bankH);
+    g.restore();
   }
   GA.img = c;
 }
@@ -1989,13 +2013,19 @@ const POST = { ok: false };
       }`,
   };
   let gl, P = {}, src, rts = [], tri;
-  function prog(fs) {
-    const sh = (type, code) => { const o = gl.createShader(type); gl.shaderSource(o, code); gl.compileShader(o);
-      if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
-    const p = gl.createProgram();
-    gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  // Compile and link without asking for status: with KHR_parallel_shader_compile the driver builds
+  // in the background and we only look once it reports done, so no frame ever waits on a compiler.
+  function progStart(fs) {
+    const sh = (type, code) => { const o = gl.createShader(type); gl.shaderSource(o, code); gl.compileShader(o); return o; };
+    const p = gl.createProgram(), vs = sh(gl.VERTEX_SHADER, VS), f = sh(gl.FRAGMENT_SHADER, fs);
+    gl.attachShader(p, vs); gl.attachShader(p, f);
     gl.bindAttribLocation(p, 0, 'p'); gl.linkProgram(p);
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return { p, vs, f };
+  }
+  function progFinish({ p, vs, f }) {
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      throw new Error(gl.getShaderInfoLog(vs) + gl.getShaderInfoLog(f) + gl.getProgramInfoLog(p));
+    }
     const u = {}, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
     for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name; u[name] = gl.getUniformLocation(p, name); }
     return { p, u };
@@ -2018,11 +2048,17 @@ const POST = { ok: false };
     for (const k in set) { const v = set[k]; if (typeof v === 'number') gl.uniform1f(pr.u[k], v); else gl.uniform2f(pr.u[k], v[0], v[1]); }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
-  POST.init = function () {
+  POST.init = async function () {
     try {
       gl = glcv.getContext('webgl', { alpha: false, antialias: false, depth: false, stencil: false, premultipliedAlpha: false });
       if (!gl) return false;
-      P = { bright: prog(FS.bright), blur: prog(FS.blur), out: prog(FS.out) };
+      const par = gl.getExtension('KHR_parallel_shader_compile');
+      const pend = { bright: progStart(FS.bright), blur: progStart(FS.blur), out: progStart(FS.out) };
+      if (par) {
+        const done = () => Object.values(pend).every(o => gl.getProgramParameter(o.p, par.COMPLETION_STATUS_KHR));
+        for (let k = 0; k < 600 && !done(); k++) await new Promise(r => requestAnimationFrame(r));
+      }
+      P = { bright: progFinish(pend.bright), blur: progFinish(pend.blur), out: progFinish(pend.out) };
       tri = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, tri);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
       gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
@@ -2038,13 +2074,25 @@ const POST = { ok: false };
     for (const r of rts) { gl.deleteTexture(r.t); gl.deleteFramebuffer(r.f); }
     const q = (d) => [Math.max(1, Math.ceil(w / d)), Math.max(1, Math.ceil(h / d))];
     rts = [rt(...q(4)), rt(...q(4)), rt(...q(8)), rt(...q(8))];
+    lastK = null;
+  };
+  let lastK = null;
+  // Idle and held frames: the picture is still, only the grain moves. Re-run the final pass on the
+  // frame already on the GPU instead of re-rendering and re-uploading the whole canvas.
+  POST.refresh = function (seed) {
+    if (!lastK) return false;
+    lastK.seed = seed;
+    const w = glcv.width, h = glcv.height, [a1, , a2] = rts, k = lastK;
+    pass(P.out, null, [['s', src], ['b1', a1.t], ['b2', a2.t]],
+      { res: [w, h], bloom: k.bloom, ca: k.ca, lens: k.lens, grain: k.grain, seed: k.seed, vig: k.vig, gs: Math.max(1, h / 900) });
+    return true;
   };
   POST.draw = function (t, realMs) {
     const w = glcv.width, h = glcv.height, [a1, b1, a2, b2] = rts;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
-    const k = postParams(t, realMs);
+    const k = lastK = postParams(t, realMs);
     pass(P.bright, a1, [['s', src]], { px: [1 / w, 1 / h], thr: k.thr });
     pass(P.blur, b1, [['s', a1.t]], { d: [1 / a1.w, 0] });
     pass(P.blur, a1, [['s', b1.t]], { d: [0, 1 / a1.h] });
@@ -2095,6 +2143,7 @@ function render(t, hold, realMs) {
   const n = FX.blur && clock.state !== 'idle' && !STILL ? samplesAt(t) : 1;
   if (n <= 1) sceneInto(ctx0, t, hold, realMs);
   else {
+    ensureSize(sub);
     for (let k = 0; k < n; k++) {                            // running mean of the sub-frames
       sceneInto(subCtx, subT(t, k, n), hold, realMs);
       ctx0.setTransform(1, 0, 0, 1, 0, 0);
@@ -2118,7 +2167,9 @@ function render(t, hold, realMs) {
   stats.cpu = b2 - a; stats.post = c - b2; stats.n = n;
   if (FX.overlay) drawOverlay(t);
 }
+let grainMade = false;
 function applyFX() {
+  if (!(FX.post && POST.ok) && !grainMade && GA.img) { grainMade = true; makeGrain(); }
   document.body.classList.toggle('post', FX.post && POST.ok);
   document.body.classList.toggle('overlay', FX.overlay);
   dirty = true;
@@ -2127,6 +2178,7 @@ function applyFX() {
 // ---------- director's overlay (O) ---------------------------------------------------------
 // Safe areas, the beat ruler with every cue and every motion-blur window, and live frame cost.
 function drawOverlay(t) {
+  ensureSize(ovcv);
   const c = ovCtx;
   c.setTransform(SX, 0, 0, SY, 0, 0);
   c.clearRect(0, 0, W, H);
@@ -2248,10 +2300,11 @@ async function play() {
   STILL = false;
   for (const el of [ui.gate, ui.rmplay]) { el.blur(); el.tabIndex = -1; }   // hidden controls must not keep focus
   ui.gate.classList.add('off'); ui.rm.classList.remove('show'); cv.classList.remove('fadein'); glcv.classList.remove('fadein');
-  const ac = audioInit();
+  const ac = audioInit();                                   // inside the gesture, before any await
   if (ac && ac.state !== 'running') {
     try { await Promise.race([ac.resume(), new Promise(r => setTimeout(r, 500))]); } catch (e) { /* play silent */ }
   }
+  await READY;
   ui.mute.classList.remove('hide');
   ui.scrub.tabIndex = 0;
   startAt(0);
@@ -2297,7 +2350,7 @@ function scrubUI(now) {
 window.addEventListener('resize', () => { scrub.w = 0; });
 
 // ---------- frame loop -------------------------------------------------------------------------
-let lastKey = '', lastGrain = -1, toastUntil = 0;
+let lastKey = '', lastGrain = -1, lastGrainSeed = -1, toastUntil = 0;
 const perf = { last: 0, samples: [] };
 function grainStep(tt) {
   const k = Math.floor(tt * 24);
@@ -2339,11 +2392,15 @@ function frame(now) {
   } else perf.last = 0;
   if (clock.state === 'ended') hold = (now - clock.holdStart) / 1000;
   if (STILL) hold = 0;
-  // idle/held frames only redraw when the caret blink flips (and the grain needs a new seed)
-  const key = clock.state === 'idle' ? 'i' + Math.floor(now / 530) + (FX.post ? ':' + Math.floor(now / 1000 * 24) : '')
-    : clock.state === 'ended' ? 'e' + Math.floor(hold * 2) + (FX.post ? ':' + Math.floor(now / 1000 * 24) : '') : '';
+  // idle/held frames only redraw when the caret blink flips; the grain alone just re-runs the last pass
+  const resting = clock.state === 'idle' || clock.state === 'ended';
+  const key = clock.state === 'idle' ? 'i' + Math.floor(now / 530) : clock.state === 'ended' ? 'e' + Math.floor(hold * 2) : '';
   if (key !== lastKey) { lastKey = key; dirty = true; }
-  if (dirty) { dirty = false; render(t, hold, now); }
+  if (dirty) { dirty = false; render(t, hold, now); lastGrainSeed = -1; }
+  else if (resting && FX.post && POST.ok && !STILL) {
+    const g = Math.floor(now / 1000 * 24);
+    if (g !== lastGrainSeed) { lastGrainSeed = g; POST.refresh(g % 997); }
+  }
   if (!STILL && !(FX.post && POST.ok)) grainStep(clock.state === 'playing' || clock.state === 'paused' ? t : now / 1000);
   scrubUI(now);
   if (toastUntil && now > toastUntil) { toastUntil = 0; ui.toast.classList.remove('show'); }
@@ -2410,40 +2467,69 @@ function makeGrain() {
     id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255;
   }
   g.putImageData(id, 0, 0);
-  ui.grain.style.backgroundImage = `url(${c.toDataURL()})`;
+  const set = url => { ui.grain.style.backgroundImage = `url(${url})`; };
+  if (c.toBlob) c.toBlob(b => set(URL.createObjectURL(b)));      // async PNG encode
+  else set(c.toDataURL());
 }
+// Boot in two stages so the page paints at once and never blocks for long:
+//   1. the play screen only needs JetBrains Mono: draw it as soon as that face is in;
+//   2. everything else (serif layouts, glyph atlas, WebGL) is built in slices between frames.
+let readyResolve;
+const READY = new Promise(r => { readyResolve = r; });
+const yieldFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));   // let a frame paint
+function fontCSS() {             // the Google Fonts sheet loads without blocking render; wait for it here
+  const l = document.getElementById('fontcss');
+  return new Promise(res => {
+    if (!l || l.sheet) return res();
+    const done = () => { if (l.sheet) res(); else l.addEventListener('load', done, { once: true }); };
+    l.addEventListener('load', done, { once: true });
+    l.addEventListener('error', res, { once: true });
+    setTimeout(res, 3500);                                    // offline: carry on with system faces
+  });
+}
+const within = (p, ms) => Promise.race([p, new Promise(r => setTimeout(r, ms))]).catch(() => {});
 async function boot() {
+  const t0 = performance.now();
   resize();
   if (window.matchMedia('(pointer: coarse)').matches) {           // touch: the hints speak touch
     ui.paused.textContent = 'paused · tap to resume';
     ui.gate.querySelector('.gs').textContent = 'sound on · tap to pause · drag to scrub';
   }
-  const faces = ['400 100px "Instrument Serif"', 'italic 400 100px "Instrument Serif"',
-    '400 100px "JetBrains Mono"', '500 100px "JetBrains Mono"', '700 100px "JetBrains Mono"'];
-  try {
-    await Promise.race([Promise.all(faces.map(f => document.fonts.load(f))), new Promise(r => setTimeout(r, 4000))]);
-  } catch (e) { /* fall back to system faces */ }
-  _lay.clear(); _adv.clear();
-  initPrompt(); initType(); initForm(); initAtlas(); initSpace(); initCode(); initEnd();
-  // drawing from a canvas is Chrome's slow path; a GPU-ready bitmap makes ~2000 glyph draws per frame cheap
-  if (window.createImageBitmap) { try { GA.img = await createImageBitmap(GA.img); } catch (e) { /* keep the canvas */ } }
-  makeGrain();
   const q = new URLSearchParams(location.search);
   for (const [k, key] of [['blur', 'blur'], ['post', 'post'], ['loop', 'loop'], ['overlay', 'overlay']]) if (q.has(k)) FX[key] = q.get(k) !== '0';
-  POST.init();
-  applyFX();
   const still = q.has('t') ? clamp(parseFloat(q.get('t')) || 0, 0, DUR) : null;
+  const reduced = still === null && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (still !== null || reduced) ui.gate.classList.add('off');   // these open on a later frame, never the prompt
+  // stage 1: the play screen
+  await fontCSS();
+  await within(Promise.all(['400 100px "JetBrains Mono"', '500 100px "JetBrains Mono"', '700 100px "JetBrains Mono"']
+    .map(f => document.fonts.load(f))), 3000);
+  _lay.clear(); _adv.clear();
+  initPrompt();
+  if (still === null && !reduced) { dirty = true; requestAnimationFrame(frame); window.__reel.firstFrame = performance.now() - t0; }
+  // stage 2: the rest of the reel, one slice per frame
+  await within(Promise.all(['400 100px "Instrument Serif"', 'italic 400 100px "Instrument Serif"'].map(f => document.fonts.load(f))), 4000);
+  await yieldFrame(); initType(); initForm(); initEnd();
+  await yieldFrame(); initCode(); initSpace();
+  for (const _ of atlasSteps()) await yieldFrame();
+  // drawing from a canvas is Chrome's slow path; a GPU-ready bitmap makes ~2000 glyph draws per frame cheap
+  if (window.createImageBitmap) { try { GA.img = await createImageBitmap(GA.img); } catch (e) { /* keep the canvas */ } }
+  await yieldFrame(); await POST.init();                   // even with ?post=0, so P can switch it on
+  await yieldFrame(); ensureSize(sub);                     // allocate the blur buffer now, not on the first fast frame
+  if (POST.ok && clock.state === 'idle') glcv.classList.add('arrive');   // the film look arrives softly
+  applyFX();
   if (still !== null) {                                    // ?t=7.25 renders a single frame (for stills)
-    ui.gate.classList.add('off');
     clock.state = 'paused'; clock.t = still; scrub.still = true;
-  } else if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  } else if (reduced) {
     clock.state = 'reduced'; clock.t = DUR; STILL = true;
-    ui.gate.classList.add('off'); ui.rm.classList.add('show');
+    ui.rm.classList.add('show');
     cv.classList.add('fadein'); glcv.classList.add('fadein');
   }
   dirty = true;
-  requestAnimationFrame(frame);
+  if (still !== null || reduced) { requestAnimationFrame(frame); window.__reel.firstFrame = performance.now() - t0; }
+  window.__reel.readyAt = performance.now() - t0;
   window.__reel.ready = true;
+  readyResolve();
 }
 // hooks for automated stills / audio analysis
 window.__reel = {

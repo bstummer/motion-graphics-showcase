@@ -66,5 +66,12 @@ its geometry to the next:
   read from it, so a cut can't drift off its beat.
 - **Re-schedulable score.** `startAt(t0)` opens a fresh audio session and `score()` books every
   event still sounding at `t0`, so resume and restart just rebuild the session.
+- **Loading.** Nothing blocks the first paint: the font stylesheet loads asynchronously (DOM text
+  uses `font-display: swap`; the canvas waits for the real faces itself). Boot runs in two stages.
+  The play screen is drawn as soon as JetBrains Mono arrives; the serif layouts, glyph atlas and
+  WebGL pass are then built one slice per frame, with shaders compiled in parallel where the
+  browser supports it. The glyph atlas takes six whole-bank passes rather than a blur filter per
+  glyph, and the blur buffer and overlay canvases are allocated only when they're needed. At rest,
+  the grain re-runs one shader pass on the frame already on the GPU instead of re-rendering it.
 - **Stage.** Locked 16:9 at 1920×1080 logical units, letterboxed on black, rendered at the
   device pixel ratio (capped at 2). DOM controls keep a minimum size, so they stay usable on phones.
