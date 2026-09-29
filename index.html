@@ -36,9 +36,35 @@
         color:var(--paper); transition:opacity .35s cubic-bezier(.2,.8,.2,1), color .2s; }
   .ui.light { color:var(--ink); }
   .ui:focus-visible, #gate:focus-visible, #rmplay:focus-visible { outline:calc(var(--u)*2) solid var(--verm); outline-offset:calc(var(--u)*6); }
-  #mute { right:calc(var(--u)*48); top:calc(var(--u)*38); opacity:.72; display:flex; align-items:center; gap:max(calc(var(--u)*10), 6px);
+  /* top-right controls: fullscreen holds the corner, sound joins beside it when the reel starts */
+  #ctrl { position:absolute; right:calc(var(--u)*48); top:calc(var(--u)*38); display:flex; align-items:center;
+          gap:max(calc(var(--u)*32), 18px); transition:opacity .45s cubic-bezier(.2,.8,.2,1); }
+  #ctrl .ui { position:relative; }
+  #mute, #fs { opacity:.72; display:flex; align-items:center; gap:max(calc(var(--u)*10), 6px);
           min-height:max(calc(var(--u)*24), 32px); }
+  #fs:hover { opacity:1; }
+  #fs[hidden] { display:none; }
+  #fs svg { width:max(calc(var(--u)*12), 9px); height:max(calc(var(--u)*12), 9px); overflow:visible; }
+  #fs path { fill:none; stroke:currentColor; stroke-width:1.7; }
+  #fs .shut, #fs[aria-pressed="true"] .open { display:none; }
+  #fs[aria-pressed="true"] .shut { display:inline; }
+  /* fullscreen, playing, mouse at rest: cursor and controls step out of the picture */
+  body.calm #ctrl { opacity:0; pointer-events:none; }
+  body.calm, body.calm * { cursor:none !important; }
+  /* phones that can't rotate for us: a quiet suggestion in the band under the picture */
+  #turn { position:fixed; left:0; right:0; top:0; height:0; display:flex; flex-direction:column; align-items:center;
+          justify-content:center; gap:16px; pointer-events:none; opacity:0; transition:opacity .6s cubic-bezier(.2,.8,.2,1);
+          font:500 10px/1.4 "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing:.26em; text-transform:uppercase;
+          color:var(--paper); text-align:center; }
+  #turn.show { opacity:1; }
+  #turn span { opacity:.55; }
+  #turn i { position:relative; width:14px; height:23px; border:1.5px solid rgba(239,233,222,.7); border-radius:3.5px;
+            animation:turn 3.6s cubic-bezier(.76,0,.24,1) infinite; }
+  #turn i b { position:absolute; left:50%; top:50%; width:2px; height:9px; margin:-4.5px 0 0 -1px; background:var(--verm); }
+  @keyframes turn { 0%, 28% { transform:rotate(0); } 50%, 82% { transform:rotate(-90deg); } 100% { transform:rotate(0); } }
+  @media (prefers-reduced-motion: reduce) { #turn i { animation:none; transform:rotate(-90deg); } }
   #mute:hover { opacity:1; }
+  #fs:focus-visible, #mute:focus-visible { opacity:1; }
   #mute i { display:inline-flex; gap:calc(var(--u)*3); align-items:flex-end; height:calc(var(--u)*12); }
   #mute i b { width:calc(var(--u)*3); background:currentColor; height:100%; }
   #mute i b:nth-child(2) { height:60%; } #mute i b:nth-child(3) { height:80%; }
@@ -85,8 +111,11 @@
   <div id="grain"></div>
   <div id="vig"></div>
   <canvas id="hud" aria-hidden="true"></canvas>
-  <button id="gate" aria-label="Play the reel with sound"><span class="gs">sound on · space pause · r restart</span></button>
-  <button id="mute" class="ui hide" aria-pressed="false" aria-label="Mute sound"><i><b></b><b></b><b></b></i><span>sound</span></button>
+  <button id="gate" aria-label="Play the reel with sound"><span class="gs">sound on · f fullscreen · space pause · r restart</span></button>
+  <div id="ctrl">
+    <button id="mute" class="ui hide" aria-pressed="false" aria-label="Mute sound"><i><b></b><b></b><b></b></i><span>sound</span></button>
+    <button id="fs" class="ui" aria-pressed="false" aria-label="Enter fullscreen" hidden><svg viewBox="0 0 12 12" aria-hidden="true"><path class="open" d="M0 4V0h4M8 0h4v4M12 8v4H8M4 12H0V8"/><path class="shut" d="M4 0v4H0M8 0v4h4M12 8H8v4M0 8h4v4"/></svg><span>fullscreen</span></button>
+  </div>
   <button id="replay" class="ui" aria-label="Replay the reel">&#8634;&nbsp; replay</button>
   <div id="paused" class="ui">paused · space to resume</div>
   <div id="toast" class="ui" aria-live="polite"></div>
@@ -95,6 +124,7 @@
   </div>
   <div id="rm" class="ui"><span>reduced motion is on</span><button id="rmplay">play the reel anyway</button></div>
 </div>
+<div id="turn" role="note"><i><b></b></i><span>turn your phone sideways</span></div>
 <script>
 'use strict';
 /* ==========================================================================
@@ -203,6 +233,7 @@ const sub = document.createElement('canvas');     // motion blur: sub-frames ren
 const subCtx = sub.getContext('2d', { alpha: false });
 const ovCtx = ovcv.getContext('2d');
 const hudcv = document.getElementById('hud');
+const turnEl = document.getElementById('turn');
 const hudCtx = hudcv.getContext('2d');
 let SX = 1, SY = 1, QUALITY = 1, dirty = true;
 // Look switches. Blur = temporal supersampling; post = the WebGL finishing pass.
@@ -213,9 +244,13 @@ function ensureSize(c) { if (c.width !== cv.width || c.height !== cv.height) { c
 function resize() {
   const vw = window.innerWidth, vh = window.innerHeight;
   const s = Math.min(vw / W, vh / H);
-  const cw = Math.max(1, Math.floor(W * s)), ch = Math.max(1, Math.floor(H * s));
+  let cw = Math.max(1, Math.min(vw, Math.round(W * s))), ch = Math.max(1, Math.min(vh, Math.round(H * s)));
+  // A 16:9 screen is filled edge to edge. Panels within half a percent of it (1366×768, 1360×768) are
+  // too: the picture takes up the rounding, a stretch far below anything visible, instead of a hairline bar.
+  if (Math.abs(vw / vh / (W / H) - 1) < 0.005) { cw = vw; ch = vh; }
   const st = stage.style;
-  st.left = Math.floor((vw - cw) / 2) + 'px'; st.top = Math.floor((vh - ch) / 2) + 'px';
+  const top = Math.floor((vh - ch) / 2);
+  st.left = Math.floor((vw - cw) / 2) + 'px'; st.top = top + 'px';
   st.width = cw + 'px'; st.height = ch + 'px';
   st.setProperty('--u', (cw / W) + 'px');
   const dpr = Math.min(window.devicePixelRatio || 1, 2) * QUALITY;
@@ -225,6 +260,7 @@ function resize() {
   if (FX.overlay) ensureSize(ovcv);
   SX = pw / W; SY = ph / H;
   if (POST.ok) POST.resize(pw, ph);
+  turnEl.style.top = (top + ch) + 'px'; turnEl.style.height = Math.max(0, vh - top - ch) + 'px';
   dirty = true;
 }
 window.addEventListener('resize', resize);
@@ -1933,7 +1969,7 @@ function drawScene(t, idle, realT, hold) {
 const $ = id => document.getElementById(id);
 const ui = {
   gate: $('gate'), mute: $('mute'), replay: $('replay'), paused: $('paused'), rm: $('rm'), rmplay: $('rmplay'),
-  grain: $('grain'), toast: $('toast'), scrub: $('scrub'), light: null,
+  grain: $('grain'), toast: $('toast'), scrub: $('scrub'), fs: $('fs'), turn: turnEl, light: null,
 };
 ui.sfill = ui.scrub.querySelector('.fill'); ui.shead = ui.scrub.querySelector('.head');
 const clock = { state: 'idle', t: 0, T0: 0, perf0: 0, cyc: 0, holdStart: 0, fromGate: false };
@@ -2159,7 +2195,7 @@ function render(t, hold, realMs) {
   ctx = ctx0;
   if (light !== ui.light) {
     ui.light = light;
-    for (const el of [ui.mute, ui.replay, ui.paused, ui.rm, ui.toast, ui.scrub]) el.classList.toggle('light', light);
+    for (const el of [ui.mute, ui.fs, ui.replay, ui.paused, ui.rm, ui.toast, ui.scrub]) el.classList.toggle('light', light);
   }
   const b2 = performance.now();
   if (FX.post && POST.ok) POST.draw(t, realMs);
@@ -2293,17 +2329,119 @@ function seek(t) {              // jump anywhere; the score re-books from there 
   else { clock.state = 'paused'; ui.replay.classList.remove('show'); ui.paused.classList.add('show'); }
   dirty = true;
 }
+// ---------- fullscreen -------------------------------------------------------------------------
+// Fullscreen only changes the size of the stage. Picture and sound are driven by the clock, so a
+// switch mid-reel never pauses, restarts or re-books anything: the next frame is drawn at the new size.
+const FSX = {
+  root: document.documentElement,
+  auto: false,      // the first play has asked for it (or the viewer chose): never force it again
+  quiet: false,     // the first play's own switch isn't announced with a toast
+  was: false,       // last state seen, so the prefixed + unprefixed events don't double up
+  until: 0,         // a switch can briefly report the page as hidden: don't treat that as leaving
+  locked: false, lockP: null,
+};
+FSX.ok = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled) &&
+         !!(FSX.root.requestFullscreen || FSX.root.webkitRequestFullscreen);
+const PHONE = window.matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600;
+const canTurn = () => !!(screen.orientation && typeof screen.orientation.lock === 'function');
+const fsOn = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+function fsRequest() {
+  FSX.until = performance.now() + 2500;
+  try {
+    const r = FSX.root.requestFullscreen ? FSX.root.requestFullscreen({ navigationUI: 'hide' }) : FSX.root.webkitRequestFullscreen();
+    return Promise.resolve(r);                                // old WebKit returns nothing
+  } catch (e) { return Promise.reject(e); }
+}
+function fsExit() {
+  FSX.until = performance.now() + 2500;
+  try { const f = document.exitFullscreen || document.webkitExitFullscreen; return Promise.resolve(f && f.call(document)); }
+  catch (e) { return Promise.reject(e); }
+}
+function fsToggle() {                                         // F and the button
+  if (!FSX.ok) return;
+  FSX.auto = true;                                            // the viewer has chosen; the first play won't override it
+  (fsOn() ? fsExit() : fsRequest()).catch(() => { /* refused: stay as we are */ });
+}
+function onFsChange() {
+  const on = fsOn();
+  if (on === FSX.was) return;
+  FSX.was = on;
+  FSX.until = performance.now() + 2500;
+  ui.fs.setAttribute('aria-pressed', String(on));
+  ui.fs.setAttribute('aria-label', on ? 'Exit fullscreen' : 'Enter fullscreen');
+  perf.samples.length = 0; perf.last = 0;                     // a switch's long frames don't mean a slow machine
+  if (on && PHONE && canTurn()) {                             // phones that can: turn to landscape with it
+    FSX.lockP = screen.orientation.lock('landscape').then(() => { FSX.locked = true; }, () => {});
+  } else if (!on) {
+    FSX.lockP = null;
+    if (FSX.locked) { try { screen.orientation.unlock(); } catch (e) { /* already free */ } FSX.locked = false; }
+  }
+  if (FSX.quiet) FSX.quiet = false; else toast('fullscreen · ' + (on ? 'on' : 'off'));
+  if (!on) calmUI(false);
+  resize();
+}
+document.addEventListener('fullscreenchange', onFsChange);
+document.addEventListener('webkitfullscreenchange', onFsChange);
+// Settled = the window has held one size for ten frames and the OS has had time for its animation.
+function settle() {
+  return new Promise(res => {
+    const t0 = performance.now();
+    let w = innerWidth, h = innerHeight, still = 0;
+    const tick = now => {
+      if (innerWidth === w && innerHeight === h) still++; else { w = innerWidth; h = innerHeight; still = 0; }
+      if ((still >= 10 && now - t0 >= 350) || now - t0 > 1600) return res();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+// The first play goes fullscreen, and the reel waits until the switch has finished so the opening
+// isn't lost to it. Must be called inside the click / key press (its request is made synchronously).
+async function fsForFirstPlay() {
+  if (FSX.auto) return;
+  FSX.auto = true;
+  if (!FSX.ok || fsOn()) return;
+  FSX.quiet = true;
+  const changed = new Promise(res => {
+    document.addEventListener('fullscreenchange', res, { once: true });
+    document.addEventListener('webkitfullscreenchange', res, { once: true });
+    setTimeout(res, 1500);
+  });
+  try { await fsRequest(); } catch (e) { FSX.quiet = false; return; }   // refused: play in the window
+  await changed;
+  if (!fsOn()) { FSX.quiet = false; return; }
+  if (FSX.lockP) await Promise.race([FSX.lockP, new Promise(r => setTimeout(r, 1200))]);
+  await settle();
+}
+// Fullscreen and playing with the mouse at rest: hide the cursor and the controls; any move brings both back.
+const calm = { until: 0, on: false };
+function wake() { calm.until = performance.now() + 2200; }
+function calmUI(on) { if (on !== calm.on) { calm.on = on; document.body.classList.toggle('calm', on); } }
+function calmStep(now) {
+  const a = document.activeElement;
+  const kbFocus = a && a !== document.body && a.matches && a.matches(':focus-visible');
+  calmUI(fsOn() && clock.state === 'playing' && now > calm.until && !scrub.active && !kbFocus);
+}
+// Phones that can't rotate for us, held upright on the play screen: suggest turning sideways.
+const portrait = window.matchMedia('(orientation: portrait)');
+function turnStep() {
+  const show = PHONE && !(FSX.ok && canTurn()) && portrait.matches && (clock.state === 'idle' || clock.state === 'reduced');
+  if (show !== ui.turn.classList.contains('show')) ui.turn.classList.toggle('show', show);
+}
+
 async function play() {
   if (clock.state !== 'idle' && clock.state !== 'reduced') return;
   clock.state = 'starting';
   clock.fromGate = true;
   STILL = false;
+  const going = fsForFirstPlay();                           // requested now, while we're inside the gesture
   for (const el of [ui.gate, ui.rmplay]) { el.blur(); el.tabIndex = -1; }   // hidden controls must not keep focus
   ui.gate.classList.add('off'); ui.rm.classList.remove('show'); cv.classList.remove('fadein'); glcv.classList.remove('fadein');
   const ac = audioInit();                                   // inside the gesture, before any await
   if (ac && ac.state !== 'running') {
     try { await Promise.race([ac.resume(), new Promise(r => setTimeout(r, 500))]); } catch (e) { /* play silent */ }
   }
+  await going;                                              // the opening waits for the switch to finish
   await READY;
   ui.mute.classList.remove('hide');
   ui.scrub.tabIndex = 0;
@@ -2403,6 +2541,8 @@ function frame(now) {
   }
   if (!STILL && !(FX.post && POST.ok)) grainStep(clock.state === 'playing' || clock.state === 'paused' ? t : now / 1000);
   scrubUI(now);
+  calmStep(now);
+  turnStep();
   if (toastUntil && now > toastUntil) { toastUntil = 0; ui.toast.classList.remove('show'); }
 }
 
@@ -2415,7 +2555,9 @@ ui.rmplay.addEventListener('click', play);
 ui.replay.addEventListener('click', e => { e.stopPropagation(); clock.fromGate = false; startAt(0); ui.replay.blur(); });
 ui.mute.addEventListener('click', e => { e.stopPropagation(); Snd.muted = !Snd.muted; applyMute(); });
 // click / tap on the picture: pause and resume, and show the scrubber
-stage.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') scrub.until = performance.now() + 2200; });
+document.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') { scrub.until = performance.now() + 2200; wake(); } });
+document.addEventListener('pointerdown', wake);
+ui.fs.addEventListener('click', e => { e.stopPropagation(); fsToggle(); });
 stage.addEventListener('click', e => {
   if (e.target !== stage && e.target !== cv) return;
   scrub.until = performance.now() + 2600;
@@ -2430,6 +2572,7 @@ function toggle(key, label) {
   toast(label + (FX[key] ? ' · on' : ' · off'));
 }
 window.addEventListener('keydown', e => {
+  wake();
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const onButton = e.target && e.target.tagName === 'BUTTON';
   if (e.code === 'Space') {
@@ -2441,6 +2584,7 @@ window.addEventListener('keydown', e => {
     else if (clock.state === 'idle' || clock.state === 'reduced') play();
   } else if (e.code === 'KeyR') { e.preventDefault(); restart(); }
   else if (e.code === 'KeyM') { Snd.muted = !Snd.muted; applyMute(); toast(Snd.muted ? 'sound · off' : 'sound · on'); }
+  else if (e.code === 'KeyF') { e.preventDefault(); fsToggle(); }
   else if (e.code === 'KeyL') toggle('loop', 'seamless loop');
   else if (e.code === 'KeyO') toggle('overlay', 'overlay');
   else if (e.code === 'KeyB') toggle('blur', 'motion blur');
@@ -2455,7 +2599,15 @@ window.addEventListener('keydown', e => {
     scrub.until = performance.now() + 2200;
   }
 });
-document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  const left = FSX.until - performance.now();
+  if (left > 0) {                    // mid-switch (macOS moves the window to a new Space): look again after it
+    setTimeout(() => { if (document.hidden) pause(); }, left);
+    return;
+  }
+  pause();
+});
 
 // ---------- boot ----------------------------------------------------------------------------------
 function makeGrain() {
@@ -2494,7 +2646,8 @@ async function boot() {
   if (window.matchMedia('(pointer: coarse)').matches) {           // touch: the hints speak touch
     ui.paused.textContent = 'paused · tap to resume';
     ui.gate.querySelector('.gs').textContent = 'sound on · tap to pause · drag to scrub';
-  }
+  } else if (!FSX.ok) ui.gate.querySelector('.gs').textContent = 'sound on · space pause · r restart';
+  ui.fs.hidden = !FSX.ok;                                   // no fullscreen here (iPhone): no button, no fuss
   const q = new URLSearchParams(location.search);
   for (const [k, key] of [['blur', 'blur'], ['post', 'post'], ['loop', 'loop'], ['overlay', 'overlay']]) if (q.has(k)) FX[key] = q.get(k) !== '0';
   const still = q.has('t') ? clamp(parseFloat(q.get('t')) || 0, 0, DUR) : null;

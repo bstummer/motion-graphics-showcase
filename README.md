@@ -12,10 +12,11 @@ Open `index.html` in a browser and click the prompt. The previous cut is kept un
 
 | Key / gesture | Action |
 |---|---|
-| click / tap the prompt | play (sound on) |
+| click / tap the prompt | play (sound on); the first play also goes fullscreen, and the reel waits for the switch to finish |
 | **Space**, or click / tap the picture | pause · resume |
 | **R** | restart |
-| **M** | mute |
+| **M**, or the sound button | mute |
+| **F**, or the fullscreen button | fullscreen on / off, any time (the play screen too); never pauses or restarts the reel |
 | **← / →** | step to the previous / next beat (every scene cut is on a beat) |
 | **⇧← / ⇧→** | step one frame |
 | drag the ruler at the bottom | scrub (mouse or touch); it appears on pause or when the pointer moves |
@@ -23,6 +24,23 @@ Open `index.html` in a browser and click the prompt. The previous cut is kept un
 | **O** | director's overlay: safe areas, cue ruler with every motion-blur window, frame / beat / cost readout |
 | **B** | true motion blur on / off |
 | **P** | post-processing on / off |
+
+### Fullscreen
+
+- Only the first play enters fullscreen. After you leave it (F, the button, Esc or the browser's own
+  controls), replaying or restarting stays in the window, and if you switch fullscreen off before
+  the first play, that choice is kept.
+- On a 16:9 screen the picture fills it edge to edge with no bars. Screens within half a percent
+  of 16:9 (1366×768, 1360×768) are filled too; the stretch is far below anything visible. Other
+  shapes stay letterboxed so the layout never changes.
+- In fullscreen, while the reel plays, the cursor and the controls step away once the mouse rests,
+  and come back as soon as it moves.
+- Where fullscreen isn't available (iPhone, an iframe that doesn't allow it), there's no button and
+  no F hint: the reel plays in the window as before.
+- Phones that allow it (Android) turn to landscape when the reel goes fullscreen and are released
+  when it leaves. Phones that can't (iPhone) show a small "turn your phone sideways" note under the
+  picture on the play screen while held upright; it goes away when the phone is turned and never
+  gets in the way of playing.
 
 With `prefers-reduced-motion` set, the page fades in on a still end card (no blinking, no grain
 motion) and offers to play the reel anyway. URL flags: `?t=7.25` renders a single still,
