@@ -41,3 +41,15 @@ signature slot:
 2. Then global craft: true temporal motion blur and a post-processing pass (halation, lens,
    grain), used with restraint.
 3. Only then new controls (scrubber, overlay, seamless loop).
+
+## Outcome (v2)
+
+1. **Ruled lines → lens wave.** On beat 21 a lens sweeps left to right through the lines, and the
+   code condenses out of each line in its wake, so the tokenizing has a cause and a direction.
+2. **Riser → a plane tilting away.** The code sits on a plane that tilts back as it accelerates,
+   with true motion blur instead of fat capsules. On beat 25 the plane swings edge-on and becomes
+   the playhead: the same rule SPACE established.
+3. **The hit → impact frame and stamp.** Two frames of inverted paper on the hit, a caret sweep
+   with real motion blur, letters that land from 112% and settle, halation and a lens kick.
+4. **Signature shot.** The sphere is set in `drawSpace()`, its own source, with depth of field,
+   halation on the core, a dolly-in and a motion-blurred yaw whip on beat 18.
